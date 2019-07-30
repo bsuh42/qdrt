@@ -4,115 +4,106 @@ using namespace std;
 #include <cmath>
 #include <vector>
 
-void viewSpectraWaveform(TString file)
+void viewSpectra(TString file, Int_t windowStart = 0, Int_t windowEnd = 0)
 {
-  //File to create a spectra assuming it isn't stored in tree or if you have a different region of interest
-  //TString file: file where waveforms are stored
+  //Create a spectra and store the integral output to a new file
+  //TString file: data that you want to view spectra of
+  //Int_t windowStart: if ==windowEnd==0, use accumulators. Otherwise, integrate waveform between these two values
   
-  //Load file and tree
-  TFile *F = new TFile(file);
-  TTree *T = (TTree *)F->Get("waveformTree");
-
-  //Variables
-  const Int_t baselineLength = 50; //We assume the baseline is at the start of each waveform
-  const Int_t roiStart = 51; //We assume the region of interest comes after the baseline. If it doesn't, this particular script runs into some issues
-  const Int_t roiEnd = 500;
-  const Int_t spectrumBins = 1000; //Number of bins in our spectrum histogram. I tend to like making this number larger then shrinking it as needed
-  const Int_t spectrumStart = 0;
-  const Int_t spectrumEnd = 1e5; //Region of interest for spectrum
-
-  Double_t baseline = 0; //Calculated baseline
-  Double_t integral = 0; //Integral of each waveform. Related to energy
-  Double_t polarity = 0; //Grab this value from tree. Pulse could be negative or positive going, we store this value in the tree
-  Double_t foo = 0;
-  vector<UShort_t> *waveform = 0;
-  vector<UShort_t> readWaveform;
-
-  //Create a histogram to store the spectrum
-  TH1D* spectrumHist = new TH1D("spectrumHist", "spectrumHist", spectrumBins, spectrumStart, spectrumEnd);
-
-  //Loop through tree and look at each waveform
-  const Int_t numberEntries = T->GetEntries();
-  T->SetBranchAddress("waveform", &waveform);
-  T->SetBranchAddress("polarity", &polarity);
-
-  for (Int_t eventNumber = 0; eventNumber < numberEntries; eventNumber++)
-  {
-    integral = 0;
-    baseline = 0;
-    polarity = 0; //Reset variables to zero so we don't mix things up when moving between waveforms
-
-    if (eventNumber%1000 == 0)
-    {
-      printf("Currently on event %d of %d\n", eventNumber, numberEntries); //I like to include a progress bar to show that program is stil running
-    }
-    T->GetEntry(eventNumber);
-    readWaveform = *waveform;
-
-    //Loop through waveform, baseline subtraction, and get integral
-    for (Int_t i = 0; i < readWaveform.size(); i++)
-    {
-      if (i < baselineLength)
-      {
-	//Baseline calculation
-        baseline += (readWaveform[i]*1.0/baselineLength*1.0);
-      }
-
-      if (i >= roiStart && i <= roiEnd)
-      {
-	//Calculate integral
-        foo = (readWaveform[i]-baseline)*polarity;
-	integral += foo;
-      }
-    }
-
-    //Once we have the integral of a waveform, put it in the histogram
-    spectrumHist->Fill(integral);
-  }
-
-  //Graphing
-  TCanvas *c1 = new TCanvas("c1", "", 1000, 600);
-  gStyle->SetOptStat(0);
-  c1->SetLogy(); //Set the y-axis to be log-scale. Makes peaks more prominent
-  spectrumHist->GetXaxis()->SetTitle("Energy(Uncalibrated)");
-  spectrumHist->Draw("hist");
-}
-
-void viewSpectraTree(TString file)
-{
-  //View the spectra from the integral values in tree
-  //TString file: path to file containing tree
-
   //Load file
   TFile *F = new TFile(file);
   TTree *T = (TTree *)F->Get("waveformTree");
 
   //Variables
-  const Int_t numberEntries = T->GetEntries();
-  const Int_t spectrumBins = 1000;
-  const Int_t spectrumStart = 0;
-  const Int_t spectrumEnd = 1e5; //Values for spectrum histogram size
-  Double_t energy = 0; //Get integral value from tree
+  Double_t baseline = 0;
+  Double_t polarity = 0;
+  Double_t temp = 0;
+  Double_t integral = 0;
+  Double_t accumulator = 0;
+  Int_t accumulatorStart = 0;
+  Int_t accumulatorEnd = 0;
+  Int_t counter = 0;
+  Int_t windowLength = 0;
+  vector<UShort_t> *waveform = 0;
+  vector<UShort_t> readWaveform;
+  Bool_t usingAccumulator = 0;
 
-  T->SetBranchAddress("energy", &energy);
-  //Create histogram
-  TH1D* spectraHist = new TH1D("spectrumHist", "spectrumHist", spectrumBins, spectrumStart, spectrumEnd);
+  const Double_t histLower = 0;
+  const Double_t histUpper = 100000;
+  const Double_t histLength = (histUpper-histLower)/100.0; //Spectra is drawn as a histogram. Set range of that histogram
 
-  for (Int_t eventNumber = 0; eventNumber < numberEntries; eventNumber++)
+  //Now let's create a new file and new tree
+  TString newFile = file;
+  TString extension = ".root";
+  newFile = newFile.Remove(newFile.Length()-extension.Length(), extension.Length());
+  newFile += "Spectra.root";
+  TFile *myFile = new TFile(newFile, "RECREATE"); //Creates the file. If it already exists, overwrites it
+  TTree *tree = new TTree("integralTree", "tree");
+  //Create branches
+  tree->Branch("integral", &integral);
+
+  //Declare what branches to read
+  T->SetBranchAddress("waveform", &waveform);
+  T->SetBranchAddress("baseline", &baseline);
+  T->SetBranchAddress("polarity", &polarity);
+  T->SetBranchAddress("accumulator1", &accumulator);
+  T->SetBranchAddress("accumulator1Start", &accumulatorStart);
+  T->SetBranchAddress("accumulator1End", &accumulatorEnd);
+  T->GetEntry(0);
+
+  if (windowStart == 0 && windowEnd == 0)
   {
-    energy = 0; //reset variables
-    if (eventNumber%1000 == 0)
+    //If the window isn't set, use accumulators. What the accumulators do is take the raw integral of a waveform within a certain window
+    //The way I have it set up, accumulator0 should be baseline, accumulator1 should be signal, and accumulator2 should be post-signal
+    //We'll have to do some baseline subtraction
+    windowStart = accumulatorStart;
+    windowEnd = accumulatorEnd;
+    usingAccumulator = 1;
+  }
+
+  windowLength = windowEnd-windowStart+1; //Since we use inclusive counting
+
+  TH1D* hist = new TH1D("", "", histLength, histLower, histUpper); //This is the spectra histogram
+
+  const Int_t numberEntries = T->GetEntries();
+  
+  for (Int_t eventNumber = 0; eventNumber<numberEntries; eventNumber++)
+  {
+    temp = 0;
+    integral = 0;
+    if (eventNumber % 1000 == 0)
     {
       printf("Currently on event %d of %d\n", eventNumber, numberEntries);
     }
     T->GetEntry(eventNumber);
-    spectraHist->Fill(energy);
+    readWaveform = *waveform;
+    integral = (accumulator - baseline*windowLength*1.0)*polarity*1.0;
+    //Set the integral using accumulator
+    
+    if (!usingAccumulator)
+    {
+      integral = 0;
+      for (Int_t i = 0; i < readWaveform.size(); i++)
+      {
+        temp = (readWaveform[i]-baseline*1.0)*polarity*1.0;
+	if (i >= windowStart && i <= windowEnd)
+	{
+	  //Integrate the waveform between the designated window
+          integral += temp;
+	}
+      }
+    }
+    hist->Fill(integral); //fill spectra
+    tree->Fill();
   }
 
-  //Graphing
+  //Draw
   TCanvas *c1 = new TCanvas("c1", "", 1000, 600);
   gStyle->SetOptStat(0);
-  c1->SetLogy();
-  spectraHist->GetXaxis()->SetTitle("Energy(Uncalibrated)");
-  spectraHist->Draw("hist");
+  hist->GetXaxis()->SetTitle("Integral");
+  hist->GetYaxis()->SetTitle("Counts");
+  hist->Draw("hist");
+
+  hist->Write("hist");
+  myFile->Write();
 }

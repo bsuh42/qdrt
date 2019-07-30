@@ -3,57 +3,64 @@
 using namespace std;
 #include <cmath>
 #include <vector>
-//I always import these modules at the start
 
-void viewWaveform(TString file, const Int_t waveformNumber)
+void viewWaveform(TString file, const Int_t waveformNumber = 0, const Int_t baselineLength = 0)
 {
-  //File to view waveforms created by ADAQ.
-  //TString file: path to .root file with waveforms to view
-  //const Int_t waveformNumber: which waveform you wish to view.
-  
-  //Load file and get tree
+  //View waveform
+  //TString file: file containing waveform
+  //Int_t waveformNumber: which waveform to view
+  //Int_t baselineLength: set length of baseline-finding algorithm. Larger value gives better statistics, but risk of including signal. If =0, use baseline value from TTree
+
+  //Load file
   TFile *F = new TFile(file);
   TTree *T = (TTree *)F->Get("waveformTree");
 
   //Variables
-  const Int_t waveformStart = 0; //This will almost be set to 0. Can change if you want to view a segment of the waveform
-  const Int_t waveformEnd = 500; //Similarly, if you wish to view just a segment of the waveform
-  const Int_t waveformBin = waveformEnd-waveformStart; //Length of the segment you are trying to view
-  const Int_t baselineLength = 50; //Adjust this to determine how many bins you want to look at when calculating baseline. Note that this value is stored in the tree, but this is more for looking at different baseline lengths.
-
-  Double_t baseline = 0; //We could grab this from the tree, but I'll show how to calculate the baseline on your own
-  Double_t integral = 0; //Also include some functionality to calculate the integral of a given waveform
-  Double_t polarity = 0; //Grab this value from the tree. Rather than having to remember if a pulse is negative or positive going, we instead store that value when we create the .root file
-  vector<UShort_t> *waveform = 0; //Initialize a vector object to store the waveform
-  Double_t foo = 0;
-
-  //Set branches and grab values from the tree
+  Double_t baseline = 0;
+  Double_t polarity = 0;
+  Double_t temp = 0;
+  vector<UShort_t> *waveform = 0; //Create a vector object to store the waveform from the tree. 
+  
+  //Read data from the tree
   T->SetBranchAddress("waveform", &waveform);
-  T->SetBranchAddress("polarity", &polarity);
-  T->GetEntry(waveformNumber);
-  vector<UShort_t> readWaveform = *waveform;
+  T->SetBranchAddress("baseline", &baseline);
+  T->SetBranchAddress("polarity", &polarity); //Specifies which branches we want to read and where to store those variables
+  T->GetEntry(waveformNumber); //Reads the branch and gets the data corresponding to the specified waveform
+  vector<UShort_t> readWaveform = *waveform; //We create a new vector object to store the tree waveform. I'm not entirely sure why this is needed, but I've run into problems when I don't have it
 
-  //Create a histogram object so we can display the waveform
-  TH1D* waveformHist = new TH1D("waveformHist", "waveformHist", waveformBin, waveformStart, waveformEnd);
-
-  //Loop through waveform, perform baseline subtraction, and store to the histogram so we can view it
-  for (Int_t i = 0; i < baselineLength; i++)
+  const Int_t waveformStart = 0;
+  const Int_t waveformEnd = readWaveform.size();
+  const Int_t waveformLength = waveformEnd-waveformStart;
+  TH1D* hist = new TH1D("", "", waveformLength, waveformStart, waveformEnd);
+  //Create a histogram to store the waveform. We then view that histogram
+  
+  if (baselineLength != 0)
   {
-    //We assume the baseline is at the start. To calculate the baseline, we take the average of the values in baselineLength. We don't expect any signal in this region, so they should all be roughly the same value. 
-    baseline += (readWaveform[i]*1.0/baselineLength*1.0);
+    baseline = 0;
+    //If we don't use the baseline value stored in the tree, calculate baseline by averaging the first x samples.
+    for (Int_t i = 0; i < baselineLength; i++)
+    {
+      temp = readWaveform[i];
+      baseline += temp;
+    }
+    baseline /= baselineLength;
   }
 
   for (Int_t i = 0; i < readWaveform.size(); i++)
   {
-    foo = (readWaveform[i]-baseline)*polarity; //Baseline subtraction, and if necessary, flip the waveform so it is always positive going
-    waveformHist->Fill(i, foo);
-    integral += foo; //Take the integral by adding up all the values
+    //Now we loop through the waveform and do baseline subtraction and positivizing
+    temp = (readWaveform[i]-baseline)*polarity;
+    hist->Fill(i, temp);
   }
-  printf("Integral = %f\n", integral);
 
-  //Graphing
-  TCanvas *c1 = new TCanvas("c1", "", 1000, 600);
-  gStyle->SetOptStat(0);
-  waveformHist->Draw("HIST"); //HIST option necessary for ROOT 6. Not necessary for ROOT 5?
+  //Now we draw the histogram
+  TCanvas *c1 = new TCanvas("c1", "", 1000, 600); //We need to create a canvas to draw on
+  gStyle->SetOptStat(0); //This disables some stat boxes
+  hist->GetXaxis()->SetTitle("Sample");
+  hist->GetYaxis()->SetTitle("Amplitude (ADC)");
+  hist->Draw("hist");
   c1->Update();
+
+  //Let's also print out the baseline value
+  printf("Baseline=%f\n", baseline);
 }
